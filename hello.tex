@@ -1,0 +1,12 @@
+% LuaLaTeX document
+\documentclass{article}
+\begin{document}
+\directlua{
+  local ffi = require("ffi")
+  ffi.cdef [[
+  int MessageBoxA(void *hWnd, const char *lpText,
+      const char *lpCaption, unsigned uType);
+  ]]
+  ffi.C.MessageBoxA(nil, "Hello LuaTeX world!", "Test", 0)
+}
+\end{document}

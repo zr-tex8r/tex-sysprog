@@ -1,0 +1,210 @@
+%%
+%% This is file 'shutwindown.sty'.
+%%
+%% Copyright (c) 2017 Takayuki YATO (aka. "ZR")
+%%   GitHub:   https://github.com/zr-tex8r
+%%   Twitter:  @zr_tex8r
+%%
+%% This package is distributed under the MIT License.
+%%
+
+%% package declaration
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{shutwindown}[2017/12/25 v1.0]
+\def\tcqwd@pkgname{shutwindown}
+
+%--------------------------------------- helpers
+
+%% packages
+\RequirePackage{keyval}
+
+%% variables
+\newcount\tcqwd@grace
+\let\tcqwd@grace@val\relax
+
+%% unique tokens
+\let\tcqwd@mk\indent
+
+%--------------------------------------- options
+
+%% key-value options
+% 'grace=<num>'
+\define@key{tcqwd}{grace}{%
+  \edef\tcqwd@grace@val{#1}}
+\DeclareOption*{%
+  \edef\tcqwd@next{\noexpand\setkeys{tcqwd}{\CurrentOption}%
+  }\tcqwd@next}
+%% dispatch
+\ProcessOptions\relax
+
+%% check 'grace' value
+\ifx\tcqwd@grace@val\relax
+  \PackageError\tcqwd@pkgname
+   {Grace time not specified}{\@ehc}%
+  \tcqwd@grace\m@ne
+\else
+  \def\tcqwd@next#1\tcqwd@mk{%
+    \ifx\tcqwd@mk#1\tcqwd@mk\else \tcqwd@grace\m@ne \fi}
+  \afterassignment\tcqwd@next\tcqwd@grace=\tcqwd@grace@val\tcqwd@mk
+  \ifnum\tcqwd@grace<\z@
+    \PackageError\tcqwd@pkgname
+     {Invalid grace time value specified}{\@ehc}%
+  \fi
+\fi
+
+%% check environment
+\ifnum\tcqwd@grace<\z@ \else
+  \directlua{
+    local ok = pcall(function()
+      ffi = require("ffi")
+      assert(ffi.C)
+    end)
+    if not ok then tex.count["tcqwd@grace"] = -1 end
+  }
+  \ifnum\tcqwd@grace<\z@
+    \PackageError\tcqwd@pkgname
+     {LuaFFI module is not available (you must run\MessageBreak
+      lua(jit)latex with '--shell-escape' option)}%
+     {\@ehc}%
+  \fi
+\fi
+
+%% quit if not ok
+\ifnum\tcqwd@grace<\z@
+\expandafter\endinput\fi\relax
+
+%--------------------------------------- main
+\begingroup
+  \def\n{\string\n}
+  \catcode33=12 \catcode35=12 \catcode126=12
+  \endlinechar=10 %
+\directlua{
+
+ffi.cdef[[
+//// TYPES
+typedef int BOOL;
+typedef char CHAR;
+typedef unsigned int UINT;
+typedef long LONG;
+typedef unsigned long DWORD;
+typedef DWORD *PDWORD;
+typedef const CHAR *LPCSTR,*PCSTR_;
+typedef void *HANDLE;
+typedef HANDLE *PHANDLE;
+typedef struct {
+    DWORD LowPart;
+    LONG HighPart;
+} LUID, *PLUID;
+#pragma pack(4)
+typedef struct {
+    LUID Luid;
+    DWORD Attributes;
+} LUID_AND_ATTRIBUTES;
+#pragma pack(8)
+typedef struct {
+    DWORD PrivilegeCount;
+    LUID_AND_ATTRIBUTES Privileges[?];
+} TOKEN_PRIVILEGES, *PTOKEN_PRIVILEGES;
+//// PROTOTYPES
+void Sleep(
+    DWORD dwMilliseconds);
+HANDLE GetCurrentProcess(
+    void);
+BOOL OpenProcessToken(
+    HANDLE ProcessHandle,
+    DWORD DesiredAccess,
+    PHANDLE TokenHandle);
+BOOL LookupPrivilegeValueA(
+    LPCSTR lpSystemName,
+    LPCSTR lpName,
+    PLUID lpLuid);
+BOOL AdjustTokenPrivileges(
+    HANDLE TokenHandle,
+    BOOL DisableAllPrivileges,
+    PTOKEN_PRIVILEGES NewState,
+    DWORD BufferLength,
+    PTOKEN_PRIVILEGES PreviousState,
+    PDWORD ReturnLength);
+DWORD GetLastError(
+    void);
+BOOL ExitWindowsEx(
+    UINT uFlags,
+    DWORD dwReserved);
+]]
+Ccst = {
+  TOKEN_ADJUST_PRIVILEGES = 0x0020;
+  TOKEN_QUERY = 0x0008;
+  SE_PRIVILEGE_ENABLED = 0x00000002;
+  SE_SHUTDOWN_NAME = "SeShutdownPrivilege";
+  ERROR_SUCCESS = 0;
+  EWX_SHUTDOWN = 0x00000001;
+}
+advapi32 = ffi.load("advapi32")
+
+local function sleep(sec)
+  ffi.C.Sleep(sec * 1000)
+end
+local function shutdown_system()
+  local TokenHandle = ffi.new("HANDLE[1]")
+  local ok = ffi.C.OpenProcessToken(ffi.C.GetCurrentProcess(),
+      Ccst.TOKEN_ADJUST_PRIVILEGES + Ccst.TOKEN_QUERY, TokenHandle)
+  if ok == 0 then return end
+  local Privileges = ffi.new("TOKEN_PRIVILEGES", 1)
+  Privileges.PrivilegeCount = 1
+  Privileges.Privileges[0].Attributes = Ccst.SE_PRIVILEGE_ENABLED
+  ok = advapi32.LookupPrivilegeValueA(nil, Ccst.SE_SHUTDOWN_NAME,
+      Privileges.Privileges[0].Luid)
+  if ok == 0 then return end
+  advapi32.AdjustTokenPrivileges(TokenHandle[0], 0, Privileges,
+      0, nil, nil)
+  if ffi.C.GetLastError() ~= Ccst.ERROR_SUCCESS then return end
+  ok = ffi.C.ExitWindowsEx(Ccst.EWX_SHUTDOWN, 0);
+  return (ok ~= 0)
+end
+
+local grace = \number\tcqwd@grace
+local ticks = {
+  60, 50, 40, 30, 20, 15, 10, 5, 4, 3, 2, 1, 0
+}
+local function message(sec)
+  local when = "right now"
+  if sec > 1 then when = "in "..sec.." seconds"
+  elseif sec > 0 then when = "in "..sec.." second"
+  end
+  texio.write("System will be shutdown "..when.."...\n")
+end
+
+-- start countdown
+texio.write("\n!!!!!!!!WARNING!!!!!!!!\n")
+message(grace)
+for i = 1, #ticks do
+  local t = ticks[i]
+  if grace > t then
+    sleep(grace - t)
+    grace = t
+    message(grace)
+  end
+end
+
+-- start shutdown
+texio.write("FAREWELL!\n")
+if not shutdown_system() then
+  tex.setcount("global", "tcqwd@grace", -1)
+end
+
+}%
+\endgroup%
+%--------------------------------------- postprocess
+
+%% check success
+\ifnum\tcqwd@grace<\z@
+  \PackageError\tcqwd@pkgname
+   {Cannot initiate system shutdown}{\@ehc}
+\fi
+
+%% stop TeX anyway
+\batchmode\@@end
+
+%--------------------------------------- all done
+\endinput
+%% EOF
